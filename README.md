@@ -5,7 +5,9 @@ info, an interactive floor guide, a page for each gallery, exhibitions, an about
 virtual walkthrough of all eight galleries.
 
 Built with [React](https://react.dev), [Vite](https://vite.dev) and
-[React Router](https://reactrouter.com). It is fully responsive (phones, tablets and laptops).
+[React Router](https://reactrouter.com). The virtual tour is drawn with
+[three.js](https://threejs.org) (WebGL), so walls render cleanly from every angle. The site is fully
+responsive (phones, tablets and laptops).
 
 ## Run it locally
 
@@ -47,14 +49,15 @@ configuration. On Vercel, import the repository and keep the defaults (framework
 - **Drag** (mouse or finger) to look around.
 - **‹ ›** buttons or **← →** keys turn 90°.
 - Click a **doorway arrow** (or press **↑** while facing it) to walk to the next room.
-- Click a **painting** to open its label; **×** or **Esc** closes it.
+- Click or tap a **painting** to open its label; **×** or **Esc** closes it.
 - Below the viewer, “In this room” and “Doorways” lists give the same actions as plain buttons.
 
 ## Editing content
 
 All text and data is in **`src/data.js`**: museum name, hours, admission, contact, guidelines,
 floors, galleries, artworks and exhibitions. Styling is in **`src/index.css`**: the colors and fonts
-are the CSS variables at the top of the file.
+are the CSS variables at the top of the file. The 3D room (walls, floor, frames, doorways) is drawn
+in **`src/components/TourScene.js`**.
 
 To change an artwork, put the image in `public/art/` and update its entry in `src/data.js`:
 

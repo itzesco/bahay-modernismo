@@ -1,12 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { floors, allGalleries, getGallery, doorsFor } from '../data.js'
 import FloorPlan from '../components/FloorPlan.jsx'
 import ArtImage from '../components/ArtImage.jsx'
+import TourScene from '../components/TourScene.js'
 
 const WALLS = ['front', 'right', 'back', 'left']
 const WALL_ANGLE = { front: 0, right: 90, back: 180, left: 270 }
 const OPPOSITE = { front: 'back', back: 'front', left: 'right', right: 'left' }
+const CLICK_SLOP = 6 // px a pointer may move and still count as a click
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
 const capitalize = (s) => s[0].toUpperCase() + s.slice(1)
@@ -43,13 +45,29 @@ export default function Tour() {
   const [pitch, setPitch] = useState(0)
   const [animate, setAnimate] = useState(false)
   const [fading, setFading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
-  const [perspective, setPerspective] = useState(500)
+  const [webglError, setWebglError] = useState(false)
   const viewRef = useRef(null)
+  const sceneRef = useRef(null)
   const dragRef = useRef(null)
   const timerRef = useRef(null)
 
-  // Entering a room: face away from the door we came through.
+  // Create the 3D renderer once.
+  useEffect(() => {
+    try {
+      sceneRef.current = new TourScene(viewRef.current, { onReady: () => setLoading(false) })
+    } catch {
+      setWebglError(true)
+    }
+    return () => {
+      clearTimeout(timerRef.current)
+      sceneRef.current?.dispose()
+      sceneRef.current = null
+    }
+  }, [])
+
+  // Entering a room: build it and face away from the door we came through.
   useEffect(() => {
     const from = location.state?.from
     const door = doors.find((d) => d.to === from)
@@ -58,20 +76,15 @@ export default function Tour() {
     setPitch(0)
     setSelected(null)
     setFading(false)
+    setLoading(true)
+    sceneRef.current?.setRoom(room, hangArtworks(room.artworks, doors), doors)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id])
 
-  useEffect(() => () => clearTimeout(timerRef.current), [])
-
-  // Fit the camera's field of view to the viewport size.
-  useLayoutEffect(() => {
-    const el = viewRef.current
-    const ro = new ResizeObserver(() =>
-      setPerspective(Math.max(Math.min(el.clientWidth * 0.3, el.clientHeight * 0.6), 240))
-    )
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
+  // Send the camera angle to the renderer.
+  useEffect(() => {
+    sceneRef.current?.setView(yaw, pitch, animate)
+  }, [yaw, pitch, animate])
 
   // Keyboard: ← → turn, ↑ walks through the door you face, Esc closes a label.
   useEffect(() => {
@@ -108,6 +121,7 @@ export default function Tour() {
       navigate(door.href)
       return
     }
+    setSelected(null)
     setAnimate(true)
     setYaw(turnTo(yaw, WALL_ANGLE[door.wall]))
     setFading(true)
@@ -117,79 +131,63 @@ export default function Tour() {
 
   function onPointerDown(e) {
     if (e.target.closest('button, a, .vt-label')) return
-    dragRef.current = { x: e.clientX, y: e.clientY, yaw, pitch }
+    dragRef.current = { x: e.clientX, y: e.clientY, yaw, pitch, moved: false }
     setAnimate(false)
     e.currentTarget.setPointerCapture(e.pointerId)
   }
 
   function onPointerMove(e) {
-    if (!dragRef.current) return
-    const dx = e.clientX - dragRef.current.x
-    const dy = e.clientY - dragRef.current.y
-    setYaw(dragRef.current.yaw - dx * 0.25)
-    setPitch(clamp(dragRef.current.pitch + dy * 0.2, -35, 35))
+    const drag = dragRef.current
+    if (!drag) {
+      // Hover: pointer cursor and highlight over paintings and doorways.
+      if (e.pointerType !== 'mouse' || e.target.closest('button, a, .vt-label')) return
+      const hit = sceneRef.current?.pick(e.clientX, e.clientY)
+      sceneRef.current?.setHovered(hit)
+      viewRef.current.style.cursor = hit ? 'pointer' : ''
+      return
+    }
+    const dx = e.clientX - drag.x
+    const dy = e.clientY - drag.y
+    if (!drag.moved && Math.hypot(dx, dy) < CLICK_SLOP) return
+    drag.moved = true
+    setYaw(drag.yaw - dx * 0.25)
+    setPitch(clamp(drag.pitch + dy * 0.2, -35, 35))
   }
 
-  function onPointerUp() {
+  function onPointerUp(e) {
+    const drag = dragRef.current
     dragRef.current = null
+    if (!drag || drag.moved || e.type === 'pointercancel') return
+    // A tap or click without dragging: open the painting or walk through the door.
+    const hit = sceneRef.current?.pick(e.clientX, e.clientY)
+    if (hit?.userData.kind === 'art') setSelected(hit.userData.art)
+    if (hit?.userData.kind === 'door') walk(hit.userData.door)
   }
 
-  const hung = hangArtworks(room.artworks, doors)
+  function openFromList(art) {
+    setSelected(art)
+    viewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   return (
     <section className="vt">
       <div
         ref={viewRef}
-        className={`vt-view ${fading ? 'fading' : ''}`}
-        style={{ perspective: `${perspective}px` }}
+        className={`vt-view ${fading || loading ? 'fading' : ''}`}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onPointerLeave={() => {
+          if (!dragRef.current) sceneRef.current?.setHovered(null)
+        }}
       >
-        <div
-          className={`vt-scene ${animate ? 'animate' : ''}`}
-          style={{ transform: `translateZ(${perspective}px) rotateX(${pitch}deg) rotateY(${yaw}deg)` }}
-        >
-          {WALLS.map((wall) => (
-            <div
-              key={wall}
-              className="vt-wall"
-              style={{
-                transform: `rotateY(${-WALL_ANGLE[wall]}deg) translateZ(-500px)`,
-                '--c': room.color,
-                backgroundImage: room.walls?.[wall] ? `url(${room.walls[wall]})` : undefined,
-              }}
-            >
-              <div className="vt-wall-inner">
-                {hung[wall].map((art) => (
-                  <button
-                    key={art.id}
-                    type="button"
-                    className="vt-frame"
-                    onClick={() => setSelected(art)}
-                    title={`${art.title} — click for details`}
-                  >
-                    <ArtImage src={art.image} alt={`${art.title} by ${art.artist}`} color={room.color} label={art.title} />
-                    <span className="vt-plaque">{art.title}</span>
-                  </button>
-                ))}
-                {doors
-                  .filter((d) => d.wall === wall)
-                  .map((door) => (
-                    <button key={door.label} type="button" className="vt-door" onClick={() => walk(door)}>
-                      <span className="vt-arrow" aria-hidden="true">
-                        ↑
-                      </span>
-                      <span className="vt-door-label">{door.label}</span>
-                    </button>
-                  ))}
-              </div>
-            </div>
-          ))}
-          <div className="vt-floor" style={{ transform: 'rotateX(90deg) translateZ(-300px)' }} />
-          <div className="vt-ceiling" style={{ transform: 'rotateX(-90deg) translateZ(-300px)' }} />
-        </div>
+        {webglError && (
+          <p className="vt-error">
+            The 3D tour needs WebGL, which isn’t available in this browser. You can still browse the room using the
+            lists below.
+          </p>
+        )}
 
         <div className="vt-hud-top">
           <div>
@@ -239,13 +237,7 @@ export default function Tour() {
           <ul className="vt-doorlist">
             {room.artworks.map((art) => (
               <li key={art.id}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelected(art)
-                    viewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                  }}
-                >
+                <button type="button" onClick={() => openFromList(art)}>
                   {art.title} — {art.artist}, {art.year}
                 </button>
               </li>
